@@ -1,11 +1,11 @@
-import React, { useRef } from 'react';
+import React, { useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Animated } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { THEME } from '../theme';
 
 export default function SpicyRating({ level = 0, onSelect, size = 18, interactive = false, showLabel = false }) {
-  const scaleAnims = useRef([1, 2, 3, 4, 5].map(() => new Animated.Value(1))).current;
+  const [scaleAnims] = useState(() => [1, 2, 3, 4, 5].map(() => new Animated.Value(1)));
 
   const handlePress = (value) => {
     if (!interactive || !onSelect) return;
@@ -26,18 +26,21 @@ export default function SpicyRating({ level = 0, onSelect, size = 18, interactiv
       })
     ]).start();
 
-    onSelect(value);
+    onSelect(value === level ? 0 : value);
   };
 
   const labels = ['Mild / Sweet', 'Warm Chemistry', 'Steamy', 'Scorching', 'Maximum Spice 🔥'];
 
   return (
     <View style={styles.wrapper}>
-      <View style={styles.container}>
+      <View style={[styles.container, { flexWrap: 'wrap' }]}>
         {[1, 2, 3, 4, 5].map((pepper) => {
           const isActive = pepper <= level;
           return (
             <TouchableOpacity
+              accessibilityRole="button"
+              accessibilityLabel={`Spice level ${pepper}`}
+              accessibilityState={{ selected: pepper === level }}
               key={pepper}
               disabled={!interactive}
               onPress={() => handlePress(pepper)}
@@ -55,6 +58,7 @@ export default function SpicyRating({ level = 0, onSelect, size = 18, interactiv
           );
         })}
       </View>
+      {interactive && <TouchableOpacity accessibilityRole="button" accessibilityLabel="Spice not applicable" onPress={() => onSelect?.(0)} style={{ minHeight: 44, justifyContent: 'center' }}><Text style={{ color: THEME.colors.textSecondary, fontSize: 12 }}>{level > 0 ? 'Clear / N/A' : 'Not applicable'}</Text></TouchableOpacity>}
       {showLabel && level > 0 && (
         <Text style={styles.levelText}>{labels[level - 1] || `${level}/5 Spice`}</Text>
       )}
@@ -64,7 +68,6 @@ export default function SpicyRating({ level = 0, onSelect, size = 18, interactiv
 
 const styles = StyleSheet.create({
   wrapper: {
-    flexDirection: 'row',
     alignItems: 'center',
     gap: 8
   },

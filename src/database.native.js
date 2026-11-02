@@ -1,5 +1,8 @@
 import * as SQLite from 'expo-sqlite';
 import { Platform } from 'react-native';
+import { mergeBookOrder } from './utils/reorder';
+import { preparePreset } from './utils/presets';
+import { validateBackup, BACKUP_APP, BACKUP_VERSION } from './utils/backup';
 
 const DB_NAME = 'readlist_books.db';
 
@@ -147,8 +150,8 @@ export const INITIAL_BOOKS = [
   }
 ];
 
-// Fallback in-memory / storage store for Web or SQLite failure
-let memoryStore = [...INITIAL_BOOKS.map((b, idx) => ({ id: idx + 1, ...b }))];
+// Fallback in-memory store for Web or SQLite failure; sample titles are an explicit first-run choice.
+let memoryStore = [];
 let dbInstance = null;
 
 export async function getDb() {
@@ -182,21 +185,31 @@ export async function initDatabase() {
       rate INTEGER DEFAULT 0,
       spicyLevel INTEGER DEFAULT 0,
       color TEXT,
-      notes TEXT
+      notes TEXT,
+      sortOrder INTEGER,
+      isSample INTEGER DEFAULT 0
     );
   `);
 
-  const countRow = await db.getFirstAsync('SELECT COUNT(*) as count FROM books');
-  if (countRow && countRow.count === 0) {
-    for (const b of INITIAL_BOOKS) {
-      await db.runAsync(
-        `INSERT INTO books (book, author, status, subgenres, type, pages, startDate, endDate, rate, spicyLevel, color, notes)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [b.book, b.author, b.status, b.subgenres, b.type, b.pages, b.startDate, b.endDate, b.rate, b.spicyLevel, b.color, b.notes]
-      );
-    }
+  const columns = await db.getAllAsync('PRAGMA table_info(books)');
+  if (!columns.some((column) => column.name === 'sortOrder')) {
+    await db.execAsync('ALTER TABLE books ADD COLUMN sortOrder INTEGER');
   }
+  for (const name of ['attachmentUri', 'attachmentName', 'attachmentFormat']) {
+    if (!columns.some((column) => column.name === name)) await db.execAsync(`ALTER TABLE books ADD COLUMN ${name} TEXT`);
+  }
+  for (const name of ['episodes', 'currentEpisode']) {
+    if (!columns.some((column) => column.name === name)) await db.execAsync(`ALTER TABLE books ADD COLUMN ${name} INTEGER DEFAULT 0`);
+  }
+  // Example titles stay identifiable so insights can leave them out of the user's totals.
+  if (!columns.some((column) => column.name === 'isSample')) await db.execAsync('ALTER TABLE books ADD COLUMN isSample INTEGER DEFAULT 0');
+  await db.execAsync('CREATE TABLE IF NOT EXISTS library_presets (id TEXT PRIMARY KEY, name TEXT NOT NULL, data TEXT NOT NULL)');
+  await db.execAsync('CREATE TABLE IF NOT EXISTS library_preferences (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+  await db.execAsync('CREATE TABLE IF NOT EXISTS reading_positions (bookId TEXT PRIMARY KEY, data TEXT NOT NULL)');
 
+  // Sample records are added only after an explicit first-run choice.
+  // Earlier series records stored their total episodes in the pages field.
+  await db.execAsync("UPDATE books SET episodes=pages, pages=0 WHERE episodes=0 AND pages>0 AND (LOWER(type) LIKE '%series%' OR LOWER(type) LIKE '%episode%')");
   return fetchBooks();
 }
 
@@ -204,25 +217,153 @@ export async function fetchBooks() {
   const db = await getDb();
   if (!db) return memoryStore;
 
-  const rows = await db.getAllAsync('SELECT * FROM books ORDER BY id DESC');
+  const rows = await db.getAllAsync('SELECT * FROM books ORDER BY sortOrder IS NOT NULL, sortOrder ASC, id DESC');
   return rows;
+}
+
+let memoryOnboardingComplete = false;
+
+export async function fetchOnboardingComplete() {
+  const db = await getDb();
+  if (!db) return memoryOnboardingComplete;
+  const row = await db.getFirstAsync('SELECT value FROM library_preferences WHERE key = ?', ['onboarding_complete']);
+  if (!row) return false;
+  try { return Boolean(JSON.parse(row.value)); } catch { return false; }
+}
+
+export async function setOnboardingComplete(complete) {
+  memoryOnboardingComplete = Boolean(complete);
+  const db = await getDb();
+  if (db) await db.runAsync('INSERT INTO library_preferences (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', ['onboarding_complete', JSON.stringify(memoryOnboardingComplete)]);
+  return memoryOnboardingComplete;
+}
+
+let memoryReaderPreferences = { showProgress: false };
+
+export async function fetchReaderPreferences() {
+  const db = await getDb();
+  if (!db) return { ...memoryReaderPreferences };
+  const row = await db.getFirstAsync('SELECT value FROM library_preferences WHERE key = ?', ['reader_preferences']);
+  if (!row) return { ...memoryReaderPreferences };
+  try { return { showProgress: false, ...JSON.parse(row.value) }; } catch { return { showProgress: false }; }
+}
+
+export async function saveReaderPreferences(input) {
+  memoryReaderPreferences = { showProgress: false, ...(input || {}) };
+  const db = await getDb();
+  if (db) await db.runAsync('INSERT INTO library_preferences (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', ['reader_preferences', JSON.stringify(memoryReaderPreferences)]);
+  return { ...memoryReaderPreferences };
+}
+
+function sampleRecord(book, index) {
+  const isSeries = /anime|series|episodes?/i.test(book.type || '') && !/movie|film/i.test(book.type || '');
+  return { ...book, id: index + 1, isSample: 1, pages: isSeries ? 0 : Number(book.pages) || 0, episodes: isSeries ? Number(book.episodes || book.pages) || 0 : Number(book.episodes) || 0, currentEpisode: Number(book.currentEpisode) || 0 };
+}
+
+export async function seedSampleLibrary() {
+  const existing = await fetchBooks();
+  if (existing.length) throw new Error('Sample titles can only be loaded into an empty library.');
+  const samples = INITIAL_BOOKS.map(sampleRecord);
+  const db = await getDb();
+  if (!db) {
+    memoryStore = samples;
+    return [...memoryStore];
+  }
+  await db.withTransactionAsync(async () => {
+    const countRow = await db.getFirstAsync('SELECT COUNT(*) as count FROM books');
+    if (countRow?.count) throw new Error('Sample titles can only be loaded into an empty library.');
+    for (const sample of samples) await addBook(sample);
+  });
+  return fetchBooks();
+}
+
+// Adds the example titles that are not already in the library and leaves every
+// existing record untouched. Examples stay marked, so insights keep ignoring them.
+export async function addSampleTitles() {
+  const existing = await fetchBooks();
+  const key = (book) => `${String(book.book || '').trim().toLowerCase()}|${String(book.type || '').trim().toLowerCase()}`;
+  const present = new Set(existing.map(key));
+  const samples = INITIAL_BOOKS.map(sampleRecord).filter((sample) => !present.has(key(sample)));
+  if (!samples.length) return { added: 0, total: existing.length };
+  const db = await getDb();
+  if (!db) {
+    for (const sample of samples) await addBook(sample);
+    return { added: samples.length, total: memoryStore.length };
+  }
+  await db.withTransactionAsync(async () => { for (const sample of samples) await addBook(sample); });
+  return { added: samples.length, total: (await fetchBooks()).length };
+}
+
+let memoryPresets = [];
+const memoryPositions = new Map();
+
+export async function fetchReadingPosition(bookId) {
+  const db = await getDb();
+  if (!db) return memoryPositions.get(String(bookId)) || null;
+  const row = await db.getFirstAsync('SELECT data FROM reading_positions WHERE bookId = ?', [String(bookId)]);
+  return row ? JSON.parse(row.data) : null;
+}
+
+export async function saveReadingPosition(bookId, position) {
+  const db = await getDb();
+  if (!db) { memoryPositions.set(String(bookId), position); return; }
+  await db.runAsync('INSERT INTO reading_positions (bookId, data) VALUES (?, ?) ON CONFLICT(bookId) DO UPDATE SET data=excluded.data', [String(bookId), JSON.stringify(position)]);
+}
+let memoryShelfSettings = { shelfCount: 3 };
+
+export async function fetchShelfSettings() {
+  const db = await getDb();
+  if (!db) return memoryShelfSettings;
+  const row = await db.getFirstAsync('SELECT value FROM library_preferences WHERE key = ?', ['shelves']);
+  return row ? JSON.parse(row.value) : { shelfCount: 3 };
+}
+
+export async function saveShelfSettings(shelfCount) {
+  if (!Number.isInteger(shelfCount) || shelfCount < 1 || shelfCount > 20) throw new Error('Choose between 1 and 20 shelves per page.');
+  const value = { shelfCount };
+  const db = await getDb();
+  if (db) await db.runAsync('INSERT INTO library_preferences (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', ['shelves', JSON.stringify(value)]);
+  memoryShelfSettings = value;
+  return value;
+}
+
+export async function fetchLibraryPresets() {
+  const db = await getDb();
+  if (!db) return [...memoryPresets];
+  const rows = await db.getAllAsync('SELECT data FROM library_presets ORDER BY name COLLATE NOCASE');
+  return rows.map((row) => JSON.parse(row.data));
+}
+
+export async function saveLibraryPreset(input) {
+  const preset = preparePreset(input);
+  const existing = await fetchLibraryPresets();
+  if (existing.some((entry) => entry.id !== preset.id && entry.name.toLocaleLowerCase() === preset.name.toLocaleLowerCase())) {
+    throw new Error('A preset with that name already exists.');
+  }
+  const db = await getDb();
+  if (db) {
+    await db.runAsync('INSERT INTO library_presets (id, name, data) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, data=excluded.data', [preset.id, preset.name, JSON.stringify(preset)]);
+  } else {
+    memoryPresets = [...existing.filter((entry) => entry.id !== preset.id), preset];
+  }
+  return preset;
 }
 
 export async function addBook(book) {
   const db = await getDb();
   const color = book.color || getRandomPaletteColor();
   if (!db) {
-    const newBook = { id: Date.now(), ...book, color };
+    const newBook = { ...book, id: Math.max(Date.now(), ...memoryStore.map((entry) => Number(entry.id) || 0)) + 1, color };
     memoryStore.unshift(newBook);
     return newBook;
   }
 
   const result = await db.runAsync(
-    `INSERT INTO books (book, author, status, subgenres, type, pages, startDate, endDate, rate, spicyLevel, color, notes)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO books (book, author, status, subgenres, type, pages, startDate, endDate, rate, spicyLevel, color, notes, attachmentUri, attachmentName, attachmentFormat, episodes, currentEpisode, isSample)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
-      book.book || "Untitled Book",
-      book.author || "Unknown Author",
+      book.book || "Untitled title",
+      book.author ?? "",
       book.status || "Want to Read",
       book.subgenres || "",
       book.type || "Paperback",
@@ -232,11 +373,17 @@ export async function addBook(book) {
       Number(book.rate) || 0,
       Number(book.spicyLevel) || 0,
       color,
-      book.notes || ""
+      book.notes || "",
+      book.attachmentUri || '',
+      book.attachmentName || '',
+      book.attachmentFormat || '',
+      Number(book.episodes) || 0,
+      Number(book.currentEpisode) || 0,
+      book.isSample ? 1 : 0
     ]
   );
 
-  return { id: result.lastInsertRowId, ...book, color };
+  return { ...book, id: result.lastInsertRowId, color };
 }
 
 export async function updateBook(id, book) {
@@ -247,7 +394,7 @@ export async function updateBook(id, book) {
   }
 
   await db.runAsync(
-    `UPDATE books SET book=?, author=?, status=?, subgenres=?, type=?, pages=?, startDate=?, endDate=?, rate=?, spicyLevel=?, color=?, notes=?
+    `UPDATE books SET book=?, author=?, status=?, subgenres=?, type=?, pages=?, startDate=?, endDate=?, rate=?, spicyLevel=?, color=?, notes=?, attachmentUri=?, attachmentName=?, attachmentFormat=?, episodes=?, currentEpisode=?, isSample=?
      WHERE id=?`,
     [
       book.book,
@@ -262,6 +409,12 @@ export async function updateBook(id, book) {
       Number(book.spicyLevel) || 0,
       book.color,
       book.notes || "",
+      book.attachmentUri || '',
+      book.attachmentName || '',
+      book.attachmentFormat || '',
+      Number(book.episodes) || 0,
+      Number(book.currentEpisode) || 0,
+      book.isSample ? 1 : 0,
       id
     ]
   );
@@ -296,62 +449,112 @@ export function getActiveLayout() {
 }
 
 export async function reorderBooks(newBooksList) {
-  saveUserPreset(newBooksList.map((b) => b.id));
   const db = await getDb();
   if (!db) {
-    memoryStore = [...newBooksList];
+    memoryStore = mergeBookOrder(memoryStore, newBooksList);
+    saveUserPreset(memoryStore.map((book) => book.id));
     return memoryStore;
   }
 
-  await db.runAsync('DELETE FROM books');
-  for (const b of newBooksList) {
-    await db.runAsync(
-      `INSERT INTO books (book, author, status, subgenres, type, pages, startDate, endDate, rate, spicyLevel, color, notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [b.book, b.author, b.status, b.subgenres, b.type, b.pages, b.startDate, b.endDate, b.rate, b.spicyLevel, b.color, b.notes]
-    );
-  }
-  return fetchBooks();
+  // Only order columns change: IDs and every other field remain intact.
+  let ordered;
+  await db.withTransactionAsync(async () => {
+    ordered = mergeBookOrder(await fetchBooks(), newBooksList);
+    for (let index = 0; index < ordered.length; index++) {
+      await db.runAsync('UPDATE books SET sortOrder = ? WHERE id = ?', [index, ordered[index].id]);
+    }
+  });
+  saveUserPreset(ordered.map((book) => book.id));
+  return ordered;
 }
 
 export async function resetToDefault() {
   const db = await getDb();
   if (!db) {
-    memoryStore = [...INITIAL_BOOKS.map((b, idx) => ({ id: idx + 1, ...b }))];
+    memoryStore = [...INITIAL_BOOKS.map((b, idx) => ({ id: idx + 1, isSample: 1, ...b }))];
     return memoryStore;
   }
 
   await db.runAsync('DELETE FROM books');
   for (const b of INITIAL_BOOKS) {
     await db.runAsync(
-      `INSERT INTO books (book, author, status, subgenres, type, pages, startDate, endDate, rate, spicyLevel, color, notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO books (book, author, status, subgenres, type, pages, startDate, endDate, rate, spicyLevel, color, notes, isSample)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
       [b.book, b.author, b.status, b.subgenres, b.type, b.pages, b.startDate, b.endDate, b.rate, b.spicyLevel, b.color, b.notes]
     );
   }
+  // Earlier series records stored their total episodes in the pages field.
+  await db.execAsync("UPDATE books SET episodes=pages, pages=0 WHERE episodes=0 AND pages>0 AND (LOWER(type) LIKE '%series%' OR LOWER(type) LIKE '%episode%')");
   return fetchBooks();
 }
 
-// Export CSV representation matching exact spreadsheet format
-export function booksToCsv(books) {
-  const headers = ['No.', 'Book', 'Author', 'Status', 'Romance Subgenres', 'Type', 'No. of Pages', 'Start Date', 'End Date', 'Rate', 'Spicy Level'];
-  const rows = books.map((b, i) => {
-    return [
-      i + 1,
-      `"${(b.book || '').replace(/"/g, '""')}"`,
-      `"${(b.author || '').replace(/"/g, '""')}"`,
-      `"${b.status || ''}"`,
-      `"${(b.subgenres || '').replace(/"/g, '""')}"`,
-      `"${b.type || ''}"`,
-      b.pages || 0,
-      `"${b.startDate || ''}"`,
-      `"${b.endDate || ''}"`,
-      b.rate || 0,
-      b.spicyLevel || 0
-    ].join(',');
-  });
+export async function replaceLibraryPresets(presets) {
+  const list = Array.isArray(presets) ? presets : [];
+  const db = await getDb();
+  if (!db) { memoryPresets = [...list]; return [...list]; }
+  await db.runAsync('DELETE FROM library_presets');
+  for (const preset of list) {
+    await db.runAsync('INSERT OR REPLACE INTO library_presets (id, name, data) VALUES (?, ?, ?)', [String(preset.id), String(preset.name), JSON.stringify(preset)]);
+  }
+  return [...list];
+}
 
-  return [headers.join(','), ...rows].join('\n');
+// A local backup holds library records, presets, reading positions and preferences.
+// Original PDF/EPUB files stay on the device and are only referenced by their URI.
+export async function exportLibrary() {
+  const db = await getDb();
+  const readingPositions = {};
+  if (db) {
+    const rows = await db.getAllAsync('SELECT bookId, data FROM reading_positions');
+    for (const row of rows) { try { readingPositions[String(row.bookId)] = JSON.parse(row.data); } catch { /* skip unreadable position */ } }
+  } else {
+    for (const [bookId, position] of memoryPositions) readingPositions[bookId] = position;
+  }
+  return {
+    app: BACKUP_APP,
+    schemaVersion: BACKUP_VERSION,
+    exportedAt: new Date().toISOString(),
+    books: await fetchBooks(),
+    presets: await fetchLibraryPresets(),
+    shelfSettings: await fetchShelfSettings(),
+    readerPreferences: await fetchReaderPreferences(),
+    readingPositions,
+  };
+}
+
+const RECORD_INSERT = `INSERT OR REPLACE INTO books (id, book, author, status, subgenres, type, pages, startDate, endDate, rate, spicyLevel, color, notes, attachmentUri, attachmentName, attachmentFormat, episodes, currentEpisode, isSample, sortOrder)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
+export async function importLibrary(snapshot, { replace = false, applyPreferences = true } = {}) {
+  const backup = validateBackup(snapshot);
+  const db = await getDb();
+  const recordValues = (record) => [record.id, record.book, record.author, record.status, record.subgenres, record.type, record.pages, record.startDate, record.endDate, record.rate, record.spicyLevel, record.color, record.notes, record.attachmentUri, record.attachmentName, record.attachmentFormat, record.episodes, record.currentEpisode, record.isSample, record.sortOrder];
+
+  if (!db) {
+    const byId = new Map((replace ? [] : memoryStore).map((book) => [String(book.id), book]));
+    for (const record of backup.books) byId.set(String(record.id), record);
+    memoryStore = [...byId.values()].sort((a, b) => Number(a.sortOrder) - Number(b.sortOrder));
+  } else {
+    // Records and their reading positions commit together, so a failed import
+    // cannot leave a half-restored library behind.
+    await db.withTransactionAsync(async () => {
+      if (replace) await db.runAsync('DELETE FROM books');
+      for (const record of backup.books) await db.runAsync(RECORD_INSERT, recordValues(record));
+      for (const [bookId, position] of Object.entries(backup.readingPositions)) {
+        await db.runAsync('INSERT INTO reading_positions (bookId, data) VALUES (?, ?) ON CONFLICT(bookId) DO UPDATE SET data=excluded.data', [String(bookId), JSON.stringify(position)]);
+      }
+    });
+  }
+
+  if (!db) {
+    for (const [bookId, position] of Object.entries(backup.readingPositions)) memoryPositions.set(String(bookId), position);
+  }
+  if (applyPreferences) {
+    await replaceLibraryPresets(backup.presets);
+    await saveShelfSettings(backup.shelfSettings.shelfCount);
+    await saveReaderPreferences(backup.readerPreferences);
+  }
+  return { imported: backup.books.length, replaced: replace, presets: applyPreferences ? backup.presets.length : 0 };
 }
 
 export const BOOK_COLORS = [

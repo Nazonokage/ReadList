@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
@@ -17,8 +17,31 @@ import { THEME } from '../theme';
 import { BOOK_COLORS } from '../database';
 import StarRating from './StarRating';
 import SpicyRating from './SpicyRating';
+import SearchableField from './SearchableField';
+import { currentTimestamp, isSeries, isWatching, statusDates } from '../utils/progress';
+import { pickDocument } from '../services/documents';
 
 const POPULAR_SUBGENRES = [
+  'Documentary',
+  'Biography',
+  'Nonfiction',
+  'Football',
+  'Sports',
+  'History',
+  'Science',
+  'Technology',
+  'Drama',
+  'Comedy',
+  'Thriller',
+  'Crime',
+  'Animation',
+  'Family',
+  'Fantasy',
+  'Science fiction',
+  'Mystery',
+  'Adventure',
+  'Horror',
+  'Historical',
   'Enemies to Lovers',
   'Slow Burn',
   'Dark Romance',
@@ -41,137 +64,153 @@ const BOOK_TYPES = [
   'Audiobook',
   'Anime Series',
   'Manga / Light Novel',
-  'Anime Movie'
+  'Anime Movie',
+  'Movie',
+  'Documentary',
+  'TV Series',
+  'Short Film',
+  'PDF',
+  'EPUB'
 ];
 
 const STATUS_OPTIONS = [
   'Want to Read',
   'Owned / Downloaded',
   'Currently Reading',
+  'Want to Watch',
+  'Currently Watching',
   'Completed',
   'Upcoming',
   'DNF'
 ];
 
-export default function AddBookModal({ visible, bookToEdit, onClose, onSave }) {
-  const [book, setBook] = useState('');
-  const [author, setAuthor] = useState('');
-  const [status, setStatus] = useState('Want to Read');
-  const [subgenres, setSubgenres] = useState('');
-  const [type, setType] = useState('Paperback');
-  const [pages, setPages] = useState('');
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
-  const [rate, setRate] = useState(0);
-  const [spicyLevel, setSpicyLevel] = useState(0);
-  const [color, setColor] = useState(BOOK_COLORS[0]);
-  const [notes, setNotes] = useState('');
+export default function AddBookModal(props) {
+  if (!props.visible) return null;
+  return <BookForm key={props.bookToEdit?.id || 'new'} {...props} />;
+}
 
-  useEffect(() => {
-    if (bookToEdit) {
-      setBook(bookToEdit.book || '');
-      setAuthor(bookToEdit.author || '');
-      setStatus(bookToEdit.status || 'Want to Read');
-      setSubgenres(bookToEdit.subgenres || '');
-      setType(bookToEdit.type || 'Paperback');
-      setPages(bookToEdit.pages ? String(bookToEdit.pages) : '');
-      setStartDate(bookToEdit.startDate || '');
-      setEndDate(bookToEdit.endDate || '');
-      setRate(bookToEdit.rate || 0);
-      setSpicyLevel(bookToEdit.spicyLevel || 0);
-      setColor(bookToEdit.color || BOOK_COLORS[0]);
-      setNotes(bookToEdit.notes || '');
-    } else {
-      setBook('');
-      setAuthor('');
-      setStatus('Want to Read');
-      setSubgenres('');
-      setType('Paperback');
-      setPages('');
-      setStartDate('');
-      setEndDate('');
-      setRate(0);
-      setSpicyLevel(0);
-      setColor(BOOK_COLORS[Math.floor(Math.random() * BOOK_COLORS.length)]);
-      setNotes('');
-    }
-  }, [bookToEdit, visible]);
+function BookForm({ visible, bookToEdit, onClose, onSave, library = [] }) {
+  const [book, setBook] = useState(bookToEdit?.book || '');
+  const [author, setAuthor] = useState(bookToEdit?.author || '');
+  const [status, setStatus] = useState(bookToEdit?.status || 'Want to Read');
+  const [subgenres, setSubgenres] = useState(bookToEdit?.subgenres || '');
+  const [type, setType] = useState(bookToEdit?.type || 'Paperback');
+  const [pages, setPages] = useState(bookToEdit?.pages ? String(bookToEdit.pages) : '');
+  const [startDate, setStartDate] = useState(() => bookToEdit?.id ? bookToEdit.startDate || '' : currentTimestamp());
+  const [episodes, setEpisodes] = useState(() => String(bookToEdit?.episodes ?? (isSeries(bookToEdit?.type) ? bookToEdit?.pages || '' : '')));
+  const [currentEpisode, setCurrentEpisode] = useState(() => String(bookToEdit?.currentEpisode || ''));
+  const [endDate, setEndDate] = useState(bookToEdit?.endDate || '');
+  const [rate, setRate] = useState(bookToEdit?.rate || 0);
+  const [spicyLevel, setSpicyLevel] = useState(bookToEdit?.spicyLevel || 0);
+  const [color, setColor] = useState(() => bookToEdit?.color || BOOK_COLORS[Math.floor(Math.random() * BOOK_COLORS.length)]);
+  const [notes, setNotes] = useState(bookToEdit?.notes || '');
+  const [saving, setSaving] = useState(false);
+  const saveLock = React.useRef(false);
+  const [attachmentDraft, setAttachmentDraft] = useState(bookToEdit?.attachmentDraft || null);
+  const [picking, setPicking] = useState(false);
+  const pickLock = React.useRef(false);
+  const [fileNote, setFileNote] = useState(bookToEdit?.fileNote || '');
 
-  const toggleSubgenrePill = (genre) => {
+  const chooseFile = async () => {
+    if (pickLock.current) return;
+    pickLock.current = true; setPicking(true);
     try {
-      Haptics.selectionAsync();
-    } catch (_) {}
-    const current = subgenres ? subgenres.split(',').map((s) => s.trim()).filter(Boolean) : [];
-    if (current.includes(genre)) {
-      const updated = current.filter((g) => g !== genre);
-      setSubgenres(updated.join(', '));
-    } else {
-      current.push(genre);
-      setSubgenres(current.join(', '));
-    }
+      const picked = await pickDocument();
+      if (!picked) return;
+      setAttachmentDraft(picked.asset);
+      if (!bookToEdit?.id || !book.trim()) setBook(picked.metadata.book);
+      if (!bookToEdit?.id || !author.trim()) setAuthor(picked.metadata.author);
+      if (!bookToEdit?.id || !subgenres) setSubgenres(picked.metadata.subgenres);
+      setType(picked.metadata.type);
+      setPages(picked.metadata.pages ? String(picked.metadata.pages) : '');
+      setFileNote(picked.metadata.warning || 'Metadata found. You can edit every field before saving.');
+    } catch (error) { Alert.alert('File not added', error.message || 'Please choose the file again.'); }
+    finally { pickLock.current = false; setPicking(false); }
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
+    if (saveLock.current || pickLock.current) return;
     if (!book.trim()) {
-      Alert.alert('Required Field', 'Please enter a book title.');
+      Alert.alert('Required Field', 'Please enter a title.');
       return;
     }
-    if (!author.trim()) {
-      Alert.alert('Required Field', 'Please enter an author name.');
+    if (isSeries(type) && (!/^\d*$/.test(episodes) || !/^\d*$/.test(currentEpisode) || (Number(episodes) > 0 && Number(currentEpisode) > Number(episodes)))) {
+      Alert.alert('Check episode progress', 'Use whole episode numbers. The current episode cannot exceed the total.');
       return;
     }
-
+    saveLock.current = true;
+    setSaving(true);
     try {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    } catch (_) {}
-
-    onSave({
+      await onSave(statusDates({
       id: bookToEdit ? bookToEdit.id : undefined,
+      attachmentDraft,
+      attachmentUri: bookToEdit?.attachmentUri || '',
+      attachmentName: bookToEdit?.attachmentName || '',
+      attachmentFormat: bookToEdit?.attachmentFormat || '',
       book: book.trim(),
       author: author.trim(),
       status,
       subgenres: subgenres.trim(),
       type,
-      pages: Number(pages) || 0,
+      pages: isWatching(type) ? 0 : Number(pages) || 0,
+      episodes: Number(episodes) || 0,
+      currentEpisode: Number(currentEpisode) || 0,
       startDate: startDate.trim(),
       endDate: endDate.trim(),
       rate: Number(rate) || 0,
       spicyLevel: Number(spicyLevel) || 0,
       color,
-      notes: notes.trim()
-    });
+      notes: notes.trim(),
+      // Editing an example keeps it marked as an example until it is deleted.
+      isSample: bookToEdit?.isSample ? 1 : 0
+    }, status, bookToEdit?.status));
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     onClose();
+    } catch (_) {
+      Alert.alert('Title not saved', 'Your changes are still here. Please try saving again.');
+    } finally {
+      saveLock.current = false;
+      setSaving(false);
+    }
   };
 
-  const activeSubgenresList = subgenres
-    ? subgenres.split(',').map((s) => s.trim().toLowerCase())
-    : [];
+  const selectedCategories = subgenres.split(',').map((entry) => entry.trim()).filter(Boolean);
+  const categories = [...POPULAR_SUBGENRES, ...library.flatMap((entry) => (entry.subgenres || '').split(',').map((tag) => tag.trim()).filter(Boolean))];
 
   return (
-    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
+    <Modal visible={visible} transparent animationType="fade" presentationStyle="overFullScreen" supportedOrientations={['portrait', 'landscape']} onRequestClose={saving || picking ? () => {} : onClose}>
       <KeyboardAvoidingView
-        style={styles.container}
+        style={styles.overlay}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
+        <TouchableOpacity accessibilityRole="button" accessibilityLabel="Dismiss title form" activeOpacity={1} disabled={saving || picking} onPress={onClose} style={styles.backdrop} />
+        <View style={styles.container}>
         {/* Header */}
         <View style={styles.header}>
-          <TouchableOpacity onPress={onClose} style={styles.cancelBtn}>
+          <TouchableOpacity onPress={onClose} disabled={saving || picking} style={styles.cancelBtn}>
             <Text style={styles.cancelBtnText}>Cancel</Text>
           </TouchableOpacity>
           <Text style={styles.headerTitle}>
-            {bookToEdit ? 'Edit Book Record' : 'Add New Book'}
+            {bookToEdit?.id ? 'Edit Record' : 'Add New Title'}
           </Text>
-          <TouchableOpacity onPress={handleSave} style={styles.saveBtn}>
-            <Text style={styles.saveBtnText}>Save</Text>
+          <TouchableOpacity onPress={handleSave} disabled={saving || picking} style={styles.saveBtn}>
+            <Text style={styles.saveBtnText}>{saving ? 'Saving…' : 'Save'}</Text>
           </TouchableOpacity>
         </View>
 
         <ScrollView
+          keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
           contentContainerStyle={styles.scrollContent}
         >
+          <TouchableOpacity onPress={chooseFile} disabled={saving || picking} accessibilityLabel="Choose PDF or EPUB file" style={styles.filePicker}>
+            <Ionicons name="folder-open-outline" size={22} color={THEME.colors.goldLight} />
+            <View style={{ flex: 1 }}><Text style={styles.fileTitle}>{picking ? 'Reading file details…' : attachmentDraft || bookToEdit?.attachmentName ? 'Replace PDF / EPUB' : 'Choose PDF / EPUB'}</Text><Text style={styles.fileDescription}>{attachmentDraft?.name || bookToEdit?.attachmentName || 'Pick a file, review its details, then save'}</Text></View>
+          </TouchableOpacity>
+          {!!fileNote && <Text style={styles.fileDescription}>{fileNote}</Text>}
+          <Text style={styles.fileDescription}>Your document stays in its original folder. ReadList saves its reference and your progress.</Text>
           {/* Cover Color Selection */}
-          <Text style={styles.label}>BOOK COVER / SPINE COLOR</Text>
+          <Text style={styles.label}>COVER / SPINE COLOR</Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.colorRow}>
             {BOOK_COLORS.map((c, i) => (
               <TouchableOpacity
@@ -193,7 +232,7 @@ export default function AddBookModal({ visible, bookToEdit, onClose, onSave }) {
 
           {/* Book Title & Author */}
           <View style={styles.inputGroup}>
-            <Text style={styles.label}>BOOK TITLE *</Text>
+            <Text style={styles.label}>TITLE *</Text>
             <TextInput
               style={styles.textInput}
               placeholder="e.g. Fourth Wing"
@@ -203,105 +242,79 @@ export default function AddBookModal({ visible, bookToEdit, onClose, onSave }) {
             />
           </View>
 
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>AUTHOR *</Text>
-            <TextInput
-              style={styles.textInput}
-              placeholder="e.g. Rebecca Yarros"
-              placeholderTextColor={THEME.colors.textTertiary}
-              value={author}
-              onChangeText={setAuthor}
-            />
-          </View>
+          <SearchableField
+            key={`author-${visible}-${bookToEdit?.id || 'new'}`}
+            label="Author / creator"
+            freeText
+            value={author}
+            options={library.map((entry) => entry.author).filter(Boolean)}
+            onChange={setAuthor}
+            placeholder="Search or add an author…"
+          />
+          <SearchableField
+            key={`status-${visible}-${bookToEdit?.id || 'new'}`}
+            label="Status"
+            value={status}
+            options={STATUS_OPTIONS}
+            onChange={setStatus}
+            allowCreate={false}
+            placeholder="Find a reading or watching status…"
+          />
+          <SearchableField
+            key={`format-${visible}-${bookToEdit?.id || 'new'}`}
+            label="Format / type"
+            value={type}
+            options={[...BOOK_TYPES, ...library.map((entry) => entry.type).filter(Boolean)]}
+            onChange={(value) => {
+              const watching = isWatching(value);
+              setType(value);
+              setStatus((current) => {
+                if (watching && current === 'Want to Read') return 'Want to Watch';
+                if (watching && current === 'Currently Reading') return 'Currently Watching';
+                if (!watching && current === 'Want to Watch') return 'Want to Read';
+                if (!watching && current === 'Currently Watching') return 'Currently Reading';
+                return current;
+              });
+            }}
+            placeholder="Search or add a format…"
+          />
+          <SearchableField
+            key={`categories-${visible}-${bookToEdit?.id || 'new'}`}
+            label="Categories and tags"
+            value={selectedCategories}
+            options={categories}
+            onChange={(values) => setSubgenres(values.join(', '))}
+            multiple
+            placeholder="Search or add another category…"
+          />
 
-          {/* Reading Status */}
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>STATUS</Text>
-            <View style={styles.pillRow}>
-              {STATUS_OPTIONS.map((st) => (
-                <TouchableOpacity
-                  key={st}
-                  onPress={() => {
-                    try { Haptics.selectionAsync(); } catch (_) {}
-                    setStatus(st);
-                  }}
-                  style={[styles.pill, status === st && styles.pillActive]}
-                >
-                  <Text style={[styles.pillText, status === st && styles.pillTextActive]}>
-                    {st}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          </View>
-
-          {/* Book Type */}
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>FORMAT / TYPE</Text>
-            <View style={styles.pillRow}>
-              {BOOK_TYPES.map((t) => (
-                <TouchableOpacity
-                  key={t}
-                  onPress={() => {
-                    try { Haptics.selectionAsync(); } catch (_) {}
-                    setType(t);
-                  }}
-                  style={[styles.pill, type === t && styles.pillActive]}
-                >
-                  <Text style={[styles.pillText, type === t && styles.pillTextActive]}>
-                    {t}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          </View>
-
-          {/* Romance Subgenres Tagging */}
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>ROMANCE SUBGENRES (SPREADSHEET TAGS)</Text>
-            <View style={styles.subgenrePillsWrap}>
-              {POPULAR_SUBGENRES.map((genre) => {
-                const isSelected = activeSubgenresList.includes(genre.toLowerCase());
-                return (
-                  <TouchableOpacity
-                    key={genre}
-                    onPress={() => toggleSubgenrePill(genre)}
-                    style={[styles.subgenrePill, isSelected && styles.subgenrePillActive]}
-                  >
-                    <Text style={[styles.subgenrePillText, isSelected && styles.subgenrePillTextActive]}>
-                      {genre}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-            <TextInput
-              style={[styles.textInput, styles.subgenreInput]}
-              placeholder="Custom tags (comma separated: e.g. Fantasy, Fae)"
-              placeholderTextColor={THEME.colors.textTertiary}
-              value={subgenres}
-              onChangeText={setSubgenres}
-            />
-          </View>
-
+          <Text style={styles.fileDescription}>Add as many categories as you like, one at a time. Tap a selected category to remove it.</Text>
           {/* Pages & Dates */}
           <View style={styles.rowTwoCols}>
-            <View style={styles.col}>
+            {!isWatching(type) && <View style={styles.col}>
               <Text style={styles.label}>NO. OF PAGES</Text>
               <TextInput
                 style={styles.textInput}
-                placeholder="420"
+                accessibilityLabel="Total pages"
+                placeholder={type === 'EPUB' ? 'No fixed page count' : 'Total pages'}
                 placeholderTextColor={THEME.colors.textTertiary}
                 keyboardType="numeric"
                 value={pages}
                 onChangeText={setPages}
               />
-            </View>
+            </View>}
+          </View>
+          {isSeries(type) && <View style={styles.rowTwoCols}>
+            <View style={styles.col}><Text style={styles.label}>TOTAL EPISODES</Text><TextInput accessibilityLabel="Total episodes" style={styles.textInput} keyboardType="numeric" placeholder="Unknown / ongoing" placeholderTextColor={THEME.colors.textTertiary} value={episodes} onChangeText={setEpisodes} /></View>
+            <View style={styles.col}><Text style={styles.label}>CURRENT EPISODE</Text><TextInput accessibilityLabel="Current episode" style={styles.textInput} keyboardType="numeric" placeholder="0" placeholderTextColor={THEME.colors.textTertiary} value={currentEpisode} onChangeText={setCurrentEpisode} /></View>
+          </View>}
+          <View style={styles.rowTwoCols}>
             <View style={styles.col}>
-              <Text style={styles.label}>START DATE</Text>
+              <Text style={styles.label}>START DATE & TIME</Text>
               <TextInput
                 style={styles.textInput}
-                placeholder="YYYY-MM-DD"
+                accessibilityLabel="Start date and time"
+                placeholder="YYYY-MM-DD or date and time"
                 placeholderTextColor={THEME.colors.textTertiary}
                 value={startDate}
                 onChangeText={setStartDate}
@@ -311,10 +324,11 @@ export default function AddBookModal({ visible, bookToEdit, onClose, onSave }) {
 
           <View style={styles.rowTwoCols}>
             <View style={styles.col}>
-              <Text style={styles.label}>END DATE</Text>
+              <Text style={styles.label}>END DATE (OPTIONAL)</Text>
               <TextInput
                 style={styles.textInput}
-                placeholder="YYYY-MM-DD"
+                accessibilityLabel="End date"
+                placeholder="Ongoing"
                 placeholderTextColor={THEME.colors.textTertiary}
                 value={endDate}
                 onChangeText={setEndDate}
@@ -329,14 +343,14 @@ export default function AddBookModal({ visible, bookToEdit, onClose, onSave }) {
               <StarRating rating={rate} onRate={setRate} size={22} interactive />
             </View>
             <View style={[styles.col, styles.ratingBoxContainer]}>
-              <Text style={styles.label}>SPICY LEVEL (1-5)</Text>
+              <Text style={styles.label}>SPICE (OPTIONAL)</Text>
               <SpicyRating level={spicyLevel} onSelect={setSpicyLevel} size={22} interactive />
             </View>
           </View>
 
           {/* Notes */}
           <View style={styles.inputGroup}>
-            <Text style={styles.label}>READER NOTES</Text>
+            <Text style={styles.label}>PERSONAL NOTES</Text>
             <TextInput
               style={[styles.textInput, styles.notesInput]}
               placeholder="Memorable quotes, tropes, favorite characters..."
@@ -348,14 +362,24 @@ export default function AddBookModal({ visible, bookToEdit, onClose, onSave }) {
             />
           </View>
         </ScrollView>
+        </View>
       </KeyboardAvoidingView>
     </Modal>
   );
 }
 
 const styles = StyleSheet.create({
+  overlay: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 12, backgroundColor: 'rgba(0,0,0,0.7)' },
+  backdrop: { ...StyleSheet.absoluteFillObject },
+  filePicker: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14, minHeight: 72, marginBottom: 12, borderRadius: 12, backgroundColor: THEME.colors.bgCard, borderWidth: 1, borderColor: THEME.colors.borderLight },
+  fileTitle: { color: THEME.colors.goldLight, fontSize: 16, fontWeight: '600' },
+  fileDescription: { color: THEME.colors.textSecondary, fontSize: 12, marginVertical: 6 },
   container: {
-    flex: 1,
+    width: '100%',
+    maxWidth: 720,
+    height: '94%',
+    borderRadius: 16,
+    overflow: 'hidden',
     backgroundColor: THEME.colors.bg
   },
   header: {
@@ -490,6 +514,7 @@ const styles = StyleSheet.create({
   },
   rowTwoCols: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 12,
     marginBottom: 18
   },
@@ -497,6 +522,7 @@ const styles = StyleSheet.create({
     flex: 1
   },
   ratingBoxContainer: {
+    minWidth: 140,
     backgroundColor: THEME.colors.bgCard,
     borderRadius: 10,
     borderWidth: 1,

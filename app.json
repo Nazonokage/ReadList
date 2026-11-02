@@ -2,8 +2,9 @@
   "expo": {
     "name": "ReadList",
     "slug": "ReadList",
-    "version": "1.0.0",
-    "orientation": "portrait",
+    "scheme": "readlist",
+    "version": "1.4.0",
+    "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "ios": {
@@ -18,10 +19,14 @@
       }
     },
     "web": {
+      "output": "single",
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "expo-sqlite"
+      "expo-sqlite",
+      "expo-router",
+      "expo-asset",
+      "expo-font"
     ]
   }
 }

@@ -1,12 +1,13 @@
-import React, { useRef } from 'react';
+import { episodeLabel } from '../utils/progress';
+import React, { useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Animated } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import { THEME } from '../theme';
 
-export default function BookShelfItem({ book, onPress }) {
-  const pressAnim = useRef(new Animated.Value(1)).current;
-  const liftAnim = useRef(new Animated.Value(0)).current;
+export default function BookShelfItem({ book, onPress, disabled = false }) {
+  const [pressAnim] = useState(() => new Animated.Value(1));
+  const [liftAnim] = useState(() => new Animated.Value(0));
 
   const handlePressIn = () => {
     Animated.parallel([
@@ -52,10 +53,12 @@ export default function BookShelfItem({ book, onPress }) {
   // Status color pill
   const getStatusColor = (status) => {
     switch (status) {
+      case 'Currently Watching':
       case 'Currently Reading': return THEME.colors.statusReading;
       case 'Completed': return THEME.colors.statusCompleted;
       case 'Owned / Downloaded': return THEME.colors.statusOwned;
       case 'Upcoming': return THEME.colors.statusUpcoming;
+      case 'Want to Watch':
       case 'Want to Read': return THEME.colors.statusWant;
       default: return THEME.colors.textTertiary;
     }
@@ -76,10 +79,14 @@ export default function BookShelfItem({ book, onPress }) {
       ]}
     >
       <TouchableOpacity
+        disabled={disabled}
         activeOpacity={1}
         onPressIn={handlePressIn}
         onPressOut={handlePressOut}
         onPress={handlePress}
+        accessibilityRole="button"
+        accessibilityLabel={`Open details for ${book.book}`}
+        accessibilityHint="Press and hold to move this title"
         style={styles.touchContainer}
       >
         {/* Book Spine Outer with 3D Bevel & Texture */}
@@ -108,6 +115,12 @@ export default function BookShelfItem({ book, onPress }) {
 
             {/* Bottom Details & Spicy Icons */}
             <View style={styles.bottomMeta}>
+              {!!book.isSample && (
+                <View style={styles.samplePill} accessibilityLabel="Example title">
+                  <Text style={styles.sampleText}>EXAMPLE</Text>
+                </View>
+              )}
+              {!!episodeLabel(book) && <Text style={{ color: '#fff', fontSize: 10, fontWeight: '700' }}>{episodeLabel(book, true)}</Text>}
               {book.spicyLevel > 0 && (
                 <View style={styles.spicePill}>
                   <Text style={styles.spiceIcon}>🌶️ {book.spicyLevel}</Text>
@@ -204,6 +217,20 @@ const styles = StyleSheet.create({
   bottomMeta: {
     alignItems: 'center',
     gap: 4
+  },
+  samplePill: {
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    borderWidth: 1,
+    borderColor: 'rgba(245,189,98,0.6)',
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    borderRadius: 6
+  },
+  sampleText: {
+    fontSize: 7,
+    color: '#F5BD62',
+    fontWeight: '800',
+    letterSpacing: 0.5
   },
   spicePill: {
     backgroundColor: 'rgba(0,0,0,0.5)',

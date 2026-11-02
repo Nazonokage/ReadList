@@ -1,14 +1,15 @@
-import React, { useRef } from 'react';
+import { episodeLabel } from '../utils/progress';
+import React, { useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Animated } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { THEME } from '../theme';
 import StarRating from './StarRating';
 import SpicyRating from './SpicyRating';
 
 export default function BookCard({ book, onPress }) {
-  const scaleAnim = useRef(new Animated.Value(1)).current;
+  const [scaleAnim] = useState(() => new Animated.Value(1));
 
   const handlePressIn = () => {
     Animated.spring(scaleAnim, {
@@ -37,6 +38,7 @@ export default function BookCard({ book, onPress }) {
 
   const getStatusBadge = (status) => {
     switch (status) {
+      case 'Currently Watching':
       case 'Currently Reading':
         return { bg: 'rgba(59, 130, 246, 0.15)', text: '#60A5FA', icon: 'book-open-outline' };
       case 'Completed':
@@ -45,6 +47,7 @@ export default function BookCard({ book, onPress }) {
         return { bg: 'rgba(139, 92, 246, 0.15)', text: '#A78BFA', icon: 'download-outline' };
       case 'Upcoming':
         return { bg: 'rgba(236, 72, 153, 0.15)', text: '#F472B6', icon: 'calendar-outline' };
+      case 'Want to Watch':
       case 'Want to Read':
         return { bg: 'rgba(245, 158, 11, 0.15)', text: '#FBBF24', icon: 'bookmark-outline' };
       default:
@@ -97,17 +100,18 @@ export default function BookCard({ book, onPress }) {
                 {book.status}
               </Text>
             </View>
-            <Text style={styles.typeText}>{book.type || 'Book'}</Text>
+            <Text style={styles.typeText}>{book.type || 'Unspecified'}</Text>
           </View>
 
           {/* Book Title & Author */}
           <Text numberOfLines={1} style={styles.titleText}>
             {book.book}
           </Text>
-          <Text numberOfLines={1} style={styles.authorText}>
+          {!!book.author && <Text numberOfLines={1} style={styles.authorText}>
             by {book.author}
-          </Text>
+          </Text>}
 
+          {!!episodeLabel(book) && <Text style={{ color: THEME.colors.goldLight, fontSize: 12, marginVertical: 6 }}>{episodeLabel(book)}</Text>}
           {/* Subgenre Chips */}
           {subgenresList.length > 0 && (
             <View style={styles.subgenresRow}>

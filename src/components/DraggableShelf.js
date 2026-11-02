@@ -3,46 +3,117 @@ import {
   View,
   Text,
   StyleSheet,
-  Animated,
-  PanResponder,
   TouchableOpacity,
-  ScrollView
+  TextInput,
+  Alert,
+  AccessibilityInfo,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { THEME } from '../theme';
-import BookShelfItem from './BookShelfItem';
-import { saveActiveLayout, getActiveLayout, saveUserPreset } from '../database';
+import DraggableBook from './DraggableBook';
+import { moveBookTo, findDropTarget } from '../utils/reorder';
+import { saveActiveLayout, getActiveLayout, saveUserPreset, fetchShelfSettings, saveShelfSettings } from '../database';
 
-const BOOK_WIDTH = 78;
 const BOOKS_PER_SHELF = 4;
 
 export const LAYOUT_MODES = [
   { key: 'CUSTOM', label: '⭐ My Custom Preset', subtitle: 'User-arranged layout (Default)' },
   { key: 'STATUS_SHELVES', label: '🏷️ Rows by Status', subtitle: 'Reading, Completed, Want to Read' },
   { key: 'SUBGENRE_SHELVES', label: '🌹 Rows by Subgenre', subtitle: 'Enemies to Lovers, Dark, Fantasy' },
-  { key: 'RECENT', label: '⚡ Recently Added', subtitle: 'Newest books first' },
+  { key: 'RECENT', label: '⚡ Recently Added', subtitle: 'Newest titles first' },
   { key: 'A_Z_TITLE', label: '🔤 Title A → Z', subtitle: 'Alphabetical order' },
   { key: 'A_Z_AUTHOR', label: '✍️ Author A → Z', subtitle: 'Grouped by writer' },
   { key: 'SPICY_HIGH', label: '🌶️ Highest Spice First', subtitle: '5-chili heat to mild' },
   { key: 'RATING_HIGH', label: '⭐ Highest Rated First', subtitle: '5-star favorites first' }
 ];
 
-export default function DraggableShelf({ books, onReorder, onSelectBook }) {
-  const [activeLayout, setActiveLayout] = useState('CUSTOM');
+export default function DraggableShelf({ books, onReorder, onSelectBook, onDragStateChange, reorderDisabled = false }) {
+  const [activeLayout, setActiveLayout] = useState(() => getActiveLayout() || 'CUSTOM');
   const [reorderMode, setReorderMode] = useState(false);
   const [showLayoutMenu, setShowLayoutMenu] = useState(false);
   const [activeDragId, setActiveDragId] = useState(null);
-
-  const pan = useRef(new Animated.ValueXY()).current;
-  const scale = useRef(new Animated.Value(1)).current;
-  const lift = useRef(new Animated.Value(0)).current;
+  const [shelfCount, setShelfCount] = useState(3);
+  const [shelfCountInput, setShelfCountInput] = useState('3');
+  const [shelfPage, setShelfPage] = useState(0);
+  const [settingsBusy, setSettingsBusy] = useState(false);
+  const settingsLock = useRef(false);
 
   useEffect(() => {
-    const saved = getActiveLayout();
-    if (saved) setActiveLayout(saved);
+    let mounted = true;
+    fetchShelfSettings().then((settings) => {
+      if (mounted) { setShelfCount(settings.shelfCount); setShelfCountInput(String(settings.shelfCount)); }
+    }).catch(() => { if (mounted) Alert.alert('Shelf settings unavailable', 'Using three shelves per page for now.'); });
+    return () => { mounted = false; };
   }, []);
+
+  const updateShelfCount = async () => {
+    if (settingsLock.current) return;
+    settingsLock.current = true; setSettingsBusy(true);
+    try {
+      const settings = await saveShelfSettings(Number(shelfCountInput));
+      setShelfCount(settings.shelfCount); setShelfPage(0);
+    } catch (error) { Alert.alert('Shelves not updated', error.message); }
+    finally { settingsLock.current = false; setSettingsBusy(false); }
+  };
+
+  const slots = useRef(new Map());
+  const measuredSlots = useRef([]);
+  const dragSession = useRef(null);
+  const dragAllowed = useRef(false);
+  const canReorder = reorderMode && !reorderDisabled && activeLayout === 'CUSTOM';
+  // Press and hold moves one title without opening Arrange mode. It is only offered
+  // for the manual layout, so an automatic sort is never silently overwritten.
+  const canPressDrag = !reorderMode && !reorderDisabled && activeLayout === 'CUSTOM';
+
+  useEffect(() => {
+    return () => onDragStateChange?.(false);
+  }, [onDragStateChange]);
+
+  const registerSlot = (id, node) => {
+    if (node) slots.current.set(id, node);
+    else slots.current.delete(id);
+  };
+
+  const startDrag = (id) => {
+    dragAllowed.current = canReorder || canPressDrag;
+    dragSession.current = id;
+    measuredSlots.current = [];
+    setActiveDragId(id);
+    onDragStateChange?.(true);
+    if (canPressDrag) Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+    // Slots are outside the animated transform, so their bounds stay stable.
+    slots.current.forEach((node, slotId) => {
+      node.measureInWindow((x, y, width, height) => {
+        if (dragSession.current === id && width > 0 && height > 0) {
+          measuredSlots.current.push({ id: slotId, x, y, width, height });
+        }
+      });
+    });
+  };
+
+  const dropBook = (id, x, y, canceled) => {
+    const wasActive = dragSession.current === id;
+    const allowed = dragAllowed.current;
+    dragSession.current = null;
+    dragAllowed.current = false;
+    setActiveDragId(null);
+    onDragStateChange?.(false);
+    if (!wasActive || canceled || !allowed) return;
+    const targetId = findDropTarget(measuredSlots.current, x, y);
+    if (targetId !== null && targetId !== id) {
+      const moved = books.find((book) => book.id === id);
+      const targetIndex = books.findIndex((book) => book.id === targetId);
+      onReorder(moveBookTo(books, id, targetId));
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+      // Screen-reader users get the same result a sighted user sees after the drop.
+      try {
+        AccessibilityInfo.announceForAccessibility?.(`${moved?.book || 'Title'} moved to position ${targetIndex + 1} of ${books.length}`);
+      } catch (_) { /* announcements are best effort */ }
+    }
+  };
+
 
   const handleSelectLayout = (layoutKey) => {
     try {
@@ -134,7 +205,7 @@ export default function DraggableShelf({ books, onReorder, onSelectBook }) {
 
   // Quick move handlers for accessible reordering
   const moveBook = (fromIndex, toIndex) => {
-    if (toIndex < 0 || toIndex >= books.length) return;
+    if (!canReorder || toIndex < 0 || toIndex >= books.length) return;
     try {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     } catch (_) {}
@@ -147,48 +218,10 @@ export default function DraggableShelf({ books, onReorder, onSelectBook }) {
     onReorder(updated);
   };
 
-  const createPanResponder = (book, globalIndex) => {
-    return PanResponder.create({
-      onStartShouldSetPanResponder: () => reorderMode,
-      onMoveShouldSetPanResponder: (_, gesture) => {
-        return reorderMode && (Math.abs(gesture.dx) > 5 || Math.abs(gesture.dy) > 5);
-      },
-      onPanResponderGrant: () => {
-        setActiveDragId(book.id);
-        try {
-          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-        } catch (_) {}
-
-        pan.setValue({ x: 0, y: 0 });
-        Animated.parallel([
-          Animated.spring(scale, { toValue: 1.12, friction: 5, useNativeDriver: false }),
-          Animated.spring(lift, { toValue: -28, friction: 5, useNativeDriver: false })
-        ]).start();
-      },
-      onPanResponderMove: Animated.event([null, { dx: pan.x, dy: pan.y }], {
-        useNativeDriver: false
-      }),
-      onPanResponderRelease: (_, gesture) => {
-        const offsetSlots = Math.round(gesture.dx / BOOK_WIDTH);
-        const verticalShelfOffset = Math.round(gesture.dy / 250);
-        const targetIndex = Math.max(
-          0,
-          Math.min(books.length - 1, globalIndex + offsetSlots + verticalShelfOffset * BOOKS_PER_SHELF)
-        );
-
-        Animated.parallel([
-          Animated.spring(scale, { toValue: 1, friction: 6, useNativeDriver: false }),
-          Animated.spring(lift, { toValue: 0, friction: 6, useNativeDriver: false }),
-          Animated.spring(pan, { toValue: { x: 0, y: 0 }, friction: 6, useNativeDriver: false })
-        ]).start(() => {
-          setActiveDragId(null);
-          if (targetIndex !== globalIndex) {
-            moveBook(globalIndex, targetIndex);
-          }
-        });
-      }
-    });
-  };
+  const totalPages = Math.max(1, Math.ceil(shelfSections.length / shelfCount));
+  const page = Math.min(shelfPage, totalPages - 1);
+  const visibleSections = shelfSections.slice(page * shelfCount, (page + 1) * shelfCount);
+  while (visibleSections.length < shelfCount) visibleSections.push({ label: `SHELF ${page * shelfCount + visibleSections.length + 1}`, items: [] });
 
   const activeLayoutInfo = LAYOUT_MODES.find((m) => m.key === activeLayout) || LAYOUT_MODES[0];
 
@@ -203,6 +236,7 @@ export default function DraggableShelf({ books, onReorder, onSelectBook }) {
             setShowLayoutMenu(!showLayoutMenu);
           }}
           style={styles.layoutPickerTrigger}
+          disabled={activeDragId !== null}
           activeOpacity={0.8}
         >
           <View style={styles.layoutIconWrap}>
@@ -227,7 +261,11 @@ export default function DraggableShelf({ books, onReorder, onSelectBook }) {
           onPress={() => {
             try { Haptics.selectionAsync(); } catch (_) {}
             setReorderMode(!reorderMode);
+            setActiveLayout('CUSTOM');
+            saveActiveLayout('CUSTOM');
           }}
+          disabled={reorderDisabled || activeDragId !== null}
+          accessibilityLabel={reorderMode ? 'Finish arranging titles' : 'Arrange titles'}
           style={[styles.rearrangeBtn, reorderMode && styles.rearrangeBtnActive]}
           activeOpacity={0.8}
         >
@@ -245,6 +283,12 @@ export default function DraggableShelf({ books, onReorder, onSelectBook }) {
       {/* Expanded Layout Menu Card */}
       {showLayoutMenu && (
         <View style={styles.layoutMenuCard}>
+          <Text style={styles.menuHeader}>Shelves per page (1–20)</Text>
+          <View style={styles.controlsBar}>
+            <TextInput value={shelfCountInput} onChangeText={setShelfCountInput} keyboardType="number-pad" accessibilityLabel="Shelves per page" style={styles.shelfCountInput} />
+            <TouchableOpacity onPress={updateShelfCount} disabled={settingsBusy} style={styles.rearrangeBtn}><Text style={styles.rearrangeBtnText}>{settingsBusy ? 'Saving…' : 'Apply'}</Text></TouchableOpacity>
+          </View>
+          <Text style={styles.menuItemSubtitle}>Extra titles continue on the next page.</Text>
           <Text style={styles.menuHeader}>CHOOSE SHELF PRESET OR AUTO-LAYOUT</Text>
           {LAYOUT_MODES.map((mode) => {
             const isSelected = activeLayout === mode.key;
@@ -280,30 +324,36 @@ export default function DraggableShelf({ books, onReorder, onSelectBook }) {
       )}
 
       {/* Reorder Hint Banner */}
-      {reorderMode && (
+      {canReorder && (
         <View style={styles.dragBanner}>
           <Ionicons name="hand-right" size={14} color={THEME.colors.gold} />
           <Text style={styles.dragBannerText}>
-            Drag book spine or use ‹ › arrows to rearrange. Your custom preset is automatically saved!
+            Drag the handle above a book, or use the arrows. Release over another book to move it there.
           </Text>
         </View>
       )}
+      {reorderDisabled && <Text style={styles.dragBannerText}>Use the full library, clear search and select All to arrange. Wait for any order save to finish.</Text>}
+      <View style={styles.pagination}>
+        <TouchableOpacity disabled={page === 0 || activeDragId !== null} onPress={() => setShelfPage(page - 1)} style={styles.pageButton} accessibilityLabel="Previous shelves"><Text style={styles.rearrangeBtnText}>Previous</Text></TouchableOpacity>
+        <Text style={styles.menuItemSubtitle}>Page {page + 1} of {totalPages}</Text>
+        <TouchableOpacity disabled={page + 1 >= totalPages || activeDragId !== null} onPress={() => setShelfPage(page + 1)} style={styles.pageButton} accessibilityLabel="Next shelves"><Text style={styles.rearrangeBtnText}>Next</Text></TouchableOpacity>
+      </View>
 
       {/* Categorized Wooden Shelves */}
-      {shelfSections.map((shelf, shelfIdx) => (
-        <View key={shelfIdx} style={styles.shelfUnit}>
+      {visibleSections.map((shelf, shelfIdx) => (
+        <View key={shelfIdx} style={[styles.shelfUnit, shelf.items.some((book) => book.id === activeDragId) && { zIndex: 100 }]}>
           {/* Books Row */}
           <View style={styles.booksRow}>
             {shelf.items.map((book) => {
               const globalIndex = books.findIndex((b) => b.id === book.id);
               const isDragging = activeDragId === book.id;
-              const panResponder = createPanResponder(book, globalIndex);
 
               return (
-                <View key={book.id} style={styles.bookSlot}>
-                  {reorderMode && (
+                <View key={book.id} style={[styles.bookSlot, isDragging && { zIndex: 100 }]}>
+                  {canReorder && (
                     <View style={styles.arrowRow}>
                       <TouchableOpacity
+                        accessibilityLabel={`Move ${book.book} earlier`}
                         onPress={() => moveBook(globalIndex, globalIndex - 1)}
                         disabled={globalIndex === 0}
                         style={[styles.arrowBtn, globalIndex === 0 && styles.arrowBtnDisabled]}
@@ -315,6 +365,7 @@ export default function DraggableShelf({ books, onReorder, onSelectBook }) {
                         />
                       </TouchableOpacity>
                       <TouchableOpacity
+                        accessibilityLabel={`Move ${book.book} later`}
                         onPress={() => moveBook(globalIndex, globalIndex + 1)}
                         disabled={globalIndex === books.length - 1}
                         style={[styles.arrowBtn, globalIndex === books.length - 1 && styles.arrowBtnDisabled]}
@@ -328,28 +379,16 @@ export default function DraggableShelf({ books, onReorder, onSelectBook }) {
                     </View>
                   )}
 
-                  <Animated.View
-                    {...panResponder.panHandlers}
-                    style={[
-                      styles.dragWrapper,
-                      isDragging && {
-                        transform: [
-                          { translateX: pan.x },
-                          { translateY: Animated.add(pan.y, lift) },
-                          { scale: scale }
-                        ],
-                        zIndex: 999,
-                        elevation: 20
-                      }
-                    ]}
-                  >
-                    <BookShelfItem
-                      book={book}
-                      onPress={() => {
-                        if (!reorderMode) onSelectBook(book);
-                      }}
-                    />
-                  </Animated.View>
+                  <DraggableBook
+                    book={book}
+                    enabled={canReorder}
+                    pressToDrag={canPressDrag}
+                    active={isDragging}
+                    registerSlot={registerSlot}
+                    onStart={startDrag}
+                    onDrop={dropBook}
+                    onSelect={() => onSelectBook(book)}
+                  />
                 </View>
               );
             })}
@@ -386,6 +425,9 @@ export default function DraggableShelf({ books, onReorder, onSelectBook }) {
 }
 
 const styles = StyleSheet.create({
+  shelfCountInput: { flex: 1, minHeight: 48, color: THEME.colors.textPrimary, borderWidth: 1, borderColor: THEME.colors.borderLight, borderRadius: 8, padding: 10, fontSize: 16 },
+  pagination: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginHorizontal: 16, marginBottom: 12 },
+  pageButton: { minHeight: 48, paddingHorizontal: 12, justifyContent: 'center' },
   container: {
     paddingVertical: 10,
     paddingBottom: 90
@@ -552,15 +594,18 @@ const styles = StyleSheet.create({
   },
   arrowRow: {
     flexDirection: 'row',
-    gap: 8,
+    gap: 0,
     marginBottom: 4,
     backgroundColor: 'rgba(0,0,0,0.4)',
-    paddingHorizontal: 6,
+    paddingHorizontal: 0,
     paddingVertical: 2,
     borderRadius: 8
   },
   arrowBtn: {
-    padding: 2
+    width: 38,
+    height: 48,
+    alignItems: 'center',
+    justifyContent: 'center'
   },
   arrowBtnDisabled: {
     opacity: 0.3

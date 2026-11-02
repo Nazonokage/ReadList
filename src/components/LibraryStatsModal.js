@@ -9,31 +9,48 @@ import {
 } from 'react-native';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { THEME } from '../theme';
+import { mediaKind } from '../utils/progress';
 
 export default function LibraryStatsModal({ visible, books, onClose }) {
   if (!visible) return null;
 
-  const totalBooks = books.length;
-  const completedBooks = books.filter((b) => b.status === 'Completed');
-  const readingBooks = books.filter((b) => b.status === 'Currently Reading');
-  const wantBooks = books.filter((b) => b.status === 'Want to Read');
+  // Example titles are seed data, not the user's activity, so they are counted
+  // once here and left out of every personal total below.
+  const sampleBooks = books.filter((b) => b.isSample);
+  const ownBooks = books.filter((b) => !b.isSample);
 
-  const totalPages = books.reduce((acc, b) => acc + (Number(b.pages) || 0), 0);
-  const completedPages = completedBooks.reduce((acc, b) => acc + (Number(b.pages) || 0), 0);
+  const totalBooks = ownBooks.length;
+  const completedBooks = ownBooks.filter((b) => b.status === 'Completed');
+  const readingBooks = ownBooks.filter((b) => ['Currently Reading', 'Currently Watching'].includes(b.status));
+  const wantBooks = ownBooks.filter((b) => ['Want to Read', 'Want to Watch'].includes(b.status));
 
-  const ratedBooks = books.filter((b) => b.rate > 0);
+  // Pages belong to books, episodes belong to series. They are counted separately so
+  // one unit is never reported as the other.
+  const bookRecords = ownBooks.filter((b) => mediaKind(b.type) === 'book');
+  const seriesRecords = ownBooks.filter((b) => mediaKind(b.type) === 'series');
+  const movieRecords = ownBooks.filter((b) => mediaKind(b.type) === 'movie');
+  const totalPages = bookRecords.reduce((acc, b) => acc + (Number(b.pages) || 0), 0);
+  const completedPages = bookRecords.filter((b) => b.status === 'Completed').reduce((acc, b) => acc + (Number(b.pages) || 0), 0);
+  const episodesTotal = seriesRecords.reduce((acc, b) => acc + (Number(b.episodes) || Number(b.pages) || 0), 0);
+  const episodesWatched = seriesRecords.reduce((acc, b) => {
+    const total = Number(b.episodes) || Number(b.pages) || 0;
+    const watched = Number(b.currentEpisode) || 0;
+    return acc + (total > 0 ? Math.min(watched, total) : watched);
+  }, 0);
+
+  const ratedBooks = ownBooks.filter((b) => b.rate > 0);
   const avgRating = ratedBooks.length
     ? (ratedBooks.reduce((acc, b) => acc + b.rate, 0) / ratedBooks.length).toFixed(1)
     : '—';
 
-  const spicyBooks = books.filter((b) => b.spicyLevel > 0);
+  const spicyBooks = ownBooks.filter((b) => b.spicyLevel > 0);
   const avgSpice = spicyBooks.length
     ? (spicyBooks.reduce((acc, b) => acc + b.spicyLevel, 0) / spicyBooks.length).toFixed(1)
     : '—';
 
   // Subgenre counts
   const genreCounts = {};
-  books.forEach((b) => {
+  ownBooks.forEach((b) => {
     if (b.subgenres) {
       b.subgenres.split(',').forEach((g) => {
         const clean = g.trim();
@@ -51,7 +68,7 @@ export default function LibraryStatsModal({ visible, books, onClose }) {
       <View style={styles.container}>
         <View style={styles.header}>
           <Text style={styles.title}>Library Statistics</Text>
-          <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
+          <TouchableOpacity onPress={onClose} style={styles.closeBtn} accessibilityRole="button" accessibilityLabel="Close statistics">
             <Ionicons name="close-circle" size={26} color={THEME.colors.textSecondary} />
           </TouchableOpacity>
         </View>
@@ -62,7 +79,7 @@ export default function LibraryStatsModal({ visible, books, onClose }) {
             <View style={styles.metricCard}>
               <Ionicons name="library" size={24} color={THEME.colors.gold} />
               <Text style={styles.metricValue}>{totalBooks}</Text>
-              <Text style={styles.metricLabel}>Total Books</Text>
+              <Text style={styles.metricLabel}>Total Titles</Text>
             </View>
 
             <View style={styles.metricCard}>
@@ -84,12 +101,21 @@ export default function LibraryStatsModal({ visible, books, onClose }) {
             </View>
           </View>
 
-          {/* Pages Read Progress */}
+          {sampleBooks.length > 0 && (
+            <View style={styles.sampleNotice}>
+              <Ionicons name="information-circle-outline" size={16} color={THEME.colors.goldLight} />
+              <Text style={styles.sampleNoticeText}>
+                {sampleBooks.length === 1 ? '1 example title is' : `${sampleBooks.length} example titles are`} not included in these totals. Edit or delete them when you no longer need the examples.
+              </Text>
+            </View>
+          )}
+
+          {/* Pages Read Progress (books only) */}
           <View style={styles.sectionCard}>
-            <Text style={styles.sectionHeader}>PAGES PROGRESS</Text>
+            <Text style={styles.sectionHeader}>PAGES · BOOKS</Text>
             <View style={styles.pagesRow}>
               <Text style={styles.pagesBigNumber}>{completedPages.toLocaleString()}</Text>
-              <Text style={styles.pagesTotalNumber}> / {totalPages.toLocaleString()} total pages</Text>
+              <Text style={styles.pagesTotalNumber}> / {totalPages.toLocaleString()} pages in books</Text>
             </View>
             <View style={styles.progressBarBg}>
               <View
@@ -99,6 +125,35 @@ export default function LibraryStatsModal({ visible, books, onClose }) {
                 ]}
               />
             </View>
+            <Text style={styles.sectionNote}>{bookRecords.length ? 'Counts pages from books in this library.' : 'No books in this library yet.'}</Text>
+          </View>
+
+          {/* Episodes (series only) */}
+          <View style={styles.sectionCard}>
+            <Text style={styles.sectionHeader}>EPISODES · SERIES</Text>
+            <View style={styles.pagesRow}>
+              <Text style={styles.pagesBigNumber}>{episodesWatched.toLocaleString()}</Text>
+              <Text style={styles.pagesTotalNumber}> / {episodesTotal.toLocaleString()} episodes recorded</Text>
+            </View>
+            <View style={styles.progressBarBg}>
+              <View
+                style={[
+                  styles.progressBarFill,
+                  { width: episodesTotal > 0 ? `${Math.min(100, (episodesWatched / episodesTotal) * 100)}%` : '0%' }
+                ]}
+              />
+            </View>
+            <Text style={styles.sectionNote}>{seriesRecords.length ? 'Episode counts from series in this library, never converted into pages.' : 'No series in this library yet.'}</Text>
+          </View>
+
+          {/* Media breakdown */}
+          <View style={styles.sectionCard}>
+            <Text style={styles.sectionHeader}>BY MEDIA</Text>
+            <View style={styles.mediaRow}>
+              <Text style={styles.mediaItem}>Books: {bookRecords.length}</Text>
+              <Text style={styles.mediaItem}>Series: {seriesRecords.length}</Text>
+              <Text style={styles.mediaItem}>Movies & films: {movieRecords.length}</Text>
+            </View>
           </View>
 
           {/* Reading Status Breakdown */}
@@ -107,7 +162,7 @@ export default function LibraryStatsModal({ visible, books, onClose }) {
             <View style={styles.statusRow}>
               <View style={styles.statusItem}>
                 <View style={[styles.statusDot, { backgroundColor: THEME.colors.statusReading }]} />
-                <Text style={styles.statusName}>Reading: {readingBooks.length}</Text>
+                <Text style={styles.statusName}>Reading / watching: {readingBooks.length}</Text>
               </View>
               <View style={styles.statusItem}>
                 <View style={[styles.statusDot, { backgroundColor: THEME.colors.statusCompleted }]} />
@@ -122,14 +177,14 @@ export default function LibraryStatsModal({ visible, books, onClose }) {
 
           {/* Top Romance Subgenres */}
           <View style={styles.sectionCard}>
-            <Text style={styles.sectionHeader}>TOP ROMANCE SUBGENRES</Text>
+            <Text style={styles.sectionHeader}>TOP CATEGORIES</Text>
             {sortedGenres.map(([genre, count], idx) => {
               const pct = totalBooks > 0 ? (count / totalBooks) * 100 : 0;
               return (
                 <View key={idx} style={styles.genreBarContainer}>
                   <View style={styles.genreLabelRow}>
                     <Text style={styles.genreName}>{genre}</Text>
-                    <Text style={styles.genreCount}>{count} books</Text>
+                    <Text style={styles.genreCount}>{count} titles</Text>
                   </View>
                   <View style={styles.genreBarBg}>
                     <View style={[styles.genreBarFill, { width: `${pct}%` }]} />
@@ -199,6 +254,23 @@ const styles = StyleSheet.create({
     marginTop: 2,
     fontWeight: '600'
   },
+  sampleNotice: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    marginBottom: 16,
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: THEME.colors.borderLight,
+    backgroundColor: THEME.colors.bgCard
+  },
+  sampleNoticeText: {
+    flex: 1,
+    color: THEME.colors.textSecondary,
+    fontSize: 12,
+    lineHeight: 17
+  },
   sectionCard: {
     backgroundColor: THEME.colors.bgCard,
     borderRadius: 14,
@@ -213,6 +285,22 @@ const styles = StyleSheet.create({
     color: THEME.colors.textTertiary,
     letterSpacing: 0.8,
     marginBottom: 12
+  },
+  sectionNote: {
+    marginTop: 10,
+    fontSize: 11,
+    lineHeight: 16,
+    color: THEME.colors.textSecondary
+  },
+  mediaRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12
+  },
+  mediaItem: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: THEME.colors.textPrimary
   },
   pagesRow: {
     flexDirection: 'row',

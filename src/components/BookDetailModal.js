@@ -1,4 +1,5 @@
-import React, { useRef, useEffect } from 'react';
+import { displayTimestamp, isSeries, episodeLabel } from '../utils/progress';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -7,7 +8,7 @@ import {
   TouchableOpacity,
   StyleSheet,
   Animated,
-  Dimensions,
+  useWindowDimensions,
   Alert
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -17,7 +18,6 @@ import { THEME } from '../theme';
 import StarRating from './StarRating';
 import SpicyRating from './SpicyRating';
 
-const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 export default function BookDetailModal({
   visible,
@@ -27,10 +27,12 @@ export default function BookDetailModal({
   onUpdateRate,
   onUpdateSpicy,
   onEdit,
+  onRead,
   onDelete
 }) {
-  const slideAnim = useRef(new Animated.Value(SCREEN_HEIGHT)).current;
-  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const { height: SCREEN_HEIGHT } = useWindowDimensions();
+  const [slideAnim] = useState(() => new Animated.Value(SCREEN_HEIGHT));
+  const [fadeAnim] = useState(() => new Animated.Value(0));
 
   useEffect(() => {
     if (visible) {
@@ -61,7 +63,7 @@ export default function BookDetailModal({
         })
       ]).start();
     }
-  }, [visible]);
+  }, [visible, fadeAnim, slideAnim, SCREEN_HEIGHT]);
 
   if (!book) return null;
 
@@ -84,7 +86,7 @@ export default function BookDetailModal({
 
   const handleDeletePrompt = () => {
     Alert.alert(
-      "Remove Book",
+      "Remove title",
       `Are you sure you want to remove "${book.book}" from your library?`,
       [
         { text: "Cancel", style: "cancel" },
@@ -108,7 +110,8 @@ export default function BookDetailModal({
     ? book.subgenres.split(',').map((s) => s.trim()).filter(Boolean)
     : [];
 
-  const statuses = ['Want to Read', 'Owned / Downloaded', 'Currently Reading', 'Completed', 'Upcoming', 'DNF'];
+  const watching = /anime|movie|film|documentary|tv series/i.test(book.type || '');
+  const statuses = [watching ? 'Want to Watch' : 'Want to Read', 'Owned / Downloaded', watching ? 'Currently Watching' : 'Currently Reading', 'Completed', 'Upcoming', 'DNF'];
 
   return (
     <Modal visible={visible} transparent animationType="none" onRequestClose={handleClose}>
@@ -120,11 +123,15 @@ export default function BookDetailModal({
         <Animated.View
           style={[
             styles.sheetContainer,
+            { maxHeight: SCREEN_HEIGHT * 0.92 },
             { transform: [{ translateY: slideAnim }] }
           ]}
         >
           {/* Grab Handle */}
           <View style={styles.handleBar} />
+          <TouchableOpacity onPress={handleClose} accessibilityRole="button" accessibilityLabel="Close details" style={styles.closeDetailsBtn}>
+            <Ionicons name="close" size={20} color={THEME.colors.textSecondary} />
+          </TouchableOpacity>
 
           <ScrollView
             showsVerticalScrollIndicator={false}
@@ -146,24 +153,31 @@ export default function BookDetailModal({
               </View>
 
               <View style={styles.heroInfo}>
-                <Text style={styles.recordNumber}>Record #{book.id}</Text>
+                <Text style={styles.recordNumber}>Title details</Text>
+                {!!book.isSample && (
+                  <View style={styles.exampleBadge}>
+                    <Text style={styles.exampleBadgeText}>EXAMPLE TITLE</Text>
+                  </View>
+                )}
                 <Text style={styles.bookTitle}>{book.book}</Text>
-                <Text style={styles.bookAuthor}>by {book.author}</Text>
+                {!!book.author && <Text style={styles.bookAuthor}>by {book.author}</Text>}
 
                 <View style={styles.typeBadge}>
                   <MaterialCommunityIcons name="book-open-page-variant" size={14} color={THEME.colors.gold} />
-                  <Text style={styles.typeBadgeText}>{book.type || 'Standard Book'}</Text>
+                  <Text style={styles.typeBadgeText}>{book.type || 'Unspecified'}</Text>
                 </View>
 
-                {book.pages > 0 && (
+                {isSeries(book.type) && <Text style={styles.pagesDetail}>{episodeLabel(book)}</Text>}
+                {!watching && book.pages > 0 && (
                   <Text style={styles.pagesDetail}>{book.pages} pages total</Text>
                 )}
               </View>
             </View>
 
+            {!!book.attachmentUri && <TouchableOpacity onPress={() => onRead(book)} accessibilityRole="button" accessibilityLabel="Read attached book" style={[styles.editBtn, { marginTop: 8, minHeight: 48 }]}><Ionicons name="book-outline" size={20} color="#18171C" /><Text style={styles.editBtnText}>Read {book.attachmentFormat}</Text></TouchableOpacity>}
             {/* Quick Status Bar */}
             <View style={styles.section}>
-              <Text style={styles.sectionLabel}>READING STATUS</Text>
+              <Text style={styles.sectionLabel}>STATUS</Text>
               <View style={styles.statusButtonsRow}>
                 {statuses.map((st) => {
                   const isCurrent = book.status === st;
@@ -193,7 +207,7 @@ export default function BookDetailModal({
 
             {/* Romance Subgenres from Spreadsheet */}
             <View style={styles.section}>
-              <Text style={styles.sectionLabel}>ROMANCE SUBGENRES</Text>
+              <Text style={styles.sectionLabel}>CATEGORIES</Text>
               <View style={styles.subgenreChipsWrap}>
                 {subgenresList.length > 0 ? (
                   subgenresList.map((genre, idx) => (
@@ -202,7 +216,7 @@ export default function BookDetailModal({
                     </View>
                   ))
                 ) : (
-                  <Text style={styles.emptyNote}>No romance subgenres tagged yet.</Text>
+                  <Text style={styles.emptyNote}>No categories added yet.</Text>
                 )}
               </View>
             </View>
@@ -225,7 +239,7 @@ export default function BookDetailModal({
 
               {/* Spicy Level Box */}
               <View style={styles.ratingBox}>
-                <Text style={styles.ratingBoxTitle}>SPICY LEVEL</Text>
+                <Text style={styles.ratingBoxTitle}>SPICE (OPTIONAL)</Text>
                 <SpicyRating
                   level={book.spicyLevel || 0}
                   onSelect={(val) => onUpdateSpicy(book.id, val)}
@@ -238,13 +252,13 @@ export default function BookDetailModal({
 
             {/* Reading Timeline / Dates */}
             <View style={styles.section}>
-              <Text style={styles.sectionLabel}>READING LOG DATES</Text>
+              <Text style={styles.sectionLabel}>PROGRESS DATES</Text>
               <View style={styles.timelineRow}>
                 <View style={styles.timelineItem}>
                   <Ionicons name="calendar-outline" size={16} color={THEME.colors.textSecondary} />
                   <View style={styles.timelineTextWrap}>
                     <Text style={styles.timelineTitle}>Start Date</Text>
-                    <Text style={styles.timelineValue}>{book.startDate || 'Not recorded'}</Text>
+                    <Text style={styles.timelineValue}>{displayTimestamp(book.startDate, 'Not recorded')}</Text>
                   </View>
                 </View>
 
@@ -252,7 +266,7 @@ export default function BookDetailModal({
                   <Ionicons name="flag-outline" size={16} color={THEME.colors.textSecondary} />
                   <View style={styles.timelineTextWrap}>
                     <Text style={styles.timelineTitle}>Finished Date</Text>
-                    <Text style={styles.timelineValue}>{book.endDate || 'In progress'}</Text>
+                    <Text style={styles.timelineValue}>{displayTimestamp(book.endDate, book.status === 'Completed' ? 'Not recorded' : 'Ongoing')}</Text>
                   </View>
                 </View>
               </View>
@@ -261,7 +275,7 @@ export default function BookDetailModal({
             {/* Personal Notes */}
             {book.notes ? (
               <View style={styles.section}>
-                <Text style={styles.sectionLabel}>READER NOTES</Text>
+                <Text style={styles.sectionLabel}>PERSONAL NOTES</Text>
                 <View style={styles.notesBox}>
                   <Text style={styles.notesText}>{book.notes}</Text>
                 </View>
@@ -269,6 +283,7 @@ export default function BookDetailModal({
             ) : null}
 
             {/* Actions: Edit & Delete */}
+            {!!book.attachmentName && <View style={styles.section}><Text style={styles.sectionLabel}>LINKED READING FILE</Text><Text style={styles.notesText}>{book.attachmentName}</Text><Text style={styles.timelineValue}>{book.attachmentFormat} · original file reference</Text></View>}
             <View style={styles.actionsRow}>
               <TouchableOpacity
                 onPress={() => {
@@ -279,7 +294,7 @@ export default function BookDetailModal({
                 activeOpacity={0.8}
               >
                 <Ionicons name="create-outline" size={18} color="#18171C" />
-                <Text style={styles.editBtnText}>Edit Book</Text>
+                <Text style={styles.editBtnText}>Edit Record</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -300,7 +315,8 @@ export default function BookDetailModal({
 const styles = StyleSheet.create({
   overlay: {
     flex: 1,
-    justifyContent: 'flex-end'
+    justifyContent: 'flex-end',
+    alignItems: 'center'
   },
   backdrop: {
     ...StyleSheet.absoluteFillObject,
@@ -310,10 +326,11 @@ const styles = StyleSheet.create({
     flex: 1
   },
   sheetContainer: {
+    width: '100%',
+    maxWidth: 720,
     backgroundColor: THEME.colors.bgCard,
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
-    maxHeight: SCREEN_HEIGHT * 0.88,
     borderTopWidth: 1,
     borderColor: THEME.colors.borderLight,
     paddingTop: 8,
@@ -327,6 +344,17 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     marginVertical: 8
   },
+  closeDetailsBtn: {
+    position: 'absolute',
+    top: 14,
+    right: 14,
+    width: 40,
+    height: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 20,
+    zIndex: 10
+  },
   scrollContent: {
     paddingHorizontal: 20,
     paddingBottom: 40
@@ -337,6 +365,7 @@ const styles = StyleSheet.create({
     alignItems: 'center'
   },
   largeCover: {
+    flexShrink: 0,
     width: 96,
     height: 142,
     borderRadius: 10,
@@ -371,6 +400,7 @@ const styles = StyleSheet.create({
   },
   heroInfo: {
     flex: 1,
+    minWidth: 0,
     marginLeft: 16
   },
   recordNumber: {
@@ -380,7 +410,23 @@ const styles = StyleSheet.create({
     letterSpacing: 0.8,
     textTransform: 'uppercase'
   },
+  exampleBadge: {
+    alignSelf: 'flex-start',
+    marginTop: 6,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: THEME.colors.borderLight
+  },
+  exampleBadgeText: {
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.7,
+    color: THEME.colors.goldLight
+  },
   bookTitle: {
+    flexShrink: 1,
     fontSize: 20,
     fontWeight: '800',
     color: THEME.colors.textPrimary,
