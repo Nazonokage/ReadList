@@ -60,6 +60,28 @@ test('drop targets follow measured rows and ignore drops outside the shelf', () 
   assert.equal(findDropTarget(slots, -2, 100), null);
 });
 
+test('shelf drops accept ledges and blank space across rows in both directions', () => {
+  const slots = [
+    { id: 1, x: 40, y: 100, width: 80, height: 200 },
+    { id: 2, x: 130, y: 160, width: 80, height: 140 },
+    { id: 3, x: 100, y: 400, width: 80, height: 200 },
+  ];
+  const shelves = [
+    { bookIds: [1, 2], x: 0, y: 80, width: 390, height: 250 },
+    { bookIds: [3], x: 0, y: 380, width: 390, height: 250 },
+  ];
+  const books = [1, 2, 3].map((id) => ({ id }));
+  const down = findDropTarget(slots, 350, 620, shelves);
+  assert.equal(down, 3, 'blank space on the lower ledge selects the lower shelf');
+  assert.deepEqual(moveBookTo(books, 1, down).map((book) => book.id), [2, 3, 1]);
+  const up = findDropTarget(slots, 175, 90, shelves);
+  assert.equal(up, 2, 'space above a short book still belongs to its shelf');
+  assert.deepEqual(moveBookTo(books, 3, up).map((book) => book.id), [1, 3, 2]);
+  assert.equal(findDropTarget(slots, 200, 350, shelves), null, 'gap between shelves cancels');
+  assert.equal(findDropTarget(slots, 400, 620, shelves), null, 'outside shelf cancels');
+  assert.equal(findDropTarget([], 200, 620, shelves), null, 'missing measurements cancel');
+});
+
 test('presets intersect title selections, categories, statuses and text while keeping saved order', () => {
   const books = [
     { id: 1, book: 'First story', status: 'Want to Read', subgenres: 'Fantasy, Adventure' },

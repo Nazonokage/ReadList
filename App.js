@@ -504,7 +504,7 @@ export default function App() {
         />
 
         <OnboardingModal
-          key={guide.session}
+          key={`guide-${guide.session}`}
           visible={guide.visible}
           firstRun={guide.firstRun}
           onChooseLibrary={handleChooseLibrary}
@@ -512,7 +512,7 @@ export default function App() {
         />
 
         <SettingsModal
-          key={settingsSession}
+          key={`settings-${settingsSession}`}
           visible={settingsVisible}
           onClose={() => setSettingsVisible(false)}
           onOpenGuide={() => { setSettingsVisible(false); openGuide(false); }}

@@ -135,6 +135,30 @@ try {
   await page.waitForFunction((before) => JSON.parse(localStorage.getItem('readlist_books_v2'))[0].id === before[1], orderBeforePress);
   assert.equal(await page.getByLabel(/^Drag .+ to rearrange$/).count(), 0, 'press and hold never opens Arrange mode');
   assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('readlist_books_v2')).map((book) => book.id)), [orderBeforePress[1], orderBeforePress[0], ...orderBeforePress.slice(2)]);
+  // Cross-shelf drops also accept the ledge and space outside book bounds.
+  await page.setViewportSize({ width: 390, height: 1400 });
+  await page.getByText('SHELF AUTO-LAYOUT', { exact: true }).click();
+  await page.getByLabel('Shelves per page', { exact: true }).fill('2');
+  await page.getByText('Apply', { exact: true }).click();
+  await page.getByText('SHELF AUTO-LAYOUT', { exact: true }).click();
+  await page.getByLabel('Arrange titles', { exact: true }).click();
+  for (const [sourceShelf, targetShelf, sourceIndex, targetIndex] of [[1, 2, 0, 7], [2, 1, 4, 0]]) {
+    const before = await page.evaluate(() => JSON.parse(localStorage.getItem('readlist_books_v2')).map((book) => book.id));
+    const source = await page.getByTestId(`shelf-${sourceShelf}`).getByLabel(/^Drag .+ to rearrange$/).first().boundingBox();
+    const target = await page.getByTestId(`shelf-${targetShelf}`).boundingBox();
+    await page.mouse.move(source.x + source.width / 2, source.y + source.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(targetIndex === 0 ? target.x + 2 : target.x + target.width - 2, target.y + target.height - 8, { steps: 30 });
+    await page.mouse.up();
+    const expected = [...before];
+    const [moved] = expected.splice(sourceIndex, 1);
+    expected.splice(targetIndex, 0, moved);
+    await page.waitForFunction((ids) => JSON.stringify(JSON.parse(localStorage.getItem('readlist_books_v2')).map((book) => book.id)) === JSON.stringify(ids), expected);
+    await page.reload();
+    assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem('readlist_books_v2')).map((book) => book.id)), expected);
+    if (targetShelf === 2) await page.getByLabel('Arrange titles', { exact: true }).click();
+  }
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.getByLabel('List view', { exact: true }).click();
   await page.getByText('Title / creator', { exact: true }).waitFor();
   const pdf = await PDFDocument.create(); pdf.setTitle('Embedded UI title'); pdf.setAuthor('File author'); pdf.addPage();

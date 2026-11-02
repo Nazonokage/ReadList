@@ -21,7 +21,19 @@ export function moveBookTo(books, fromId, toId) {
 }
 
 // Use actual untransformed slot bounds; a canceled/outside drop is a no-op.
-export function findDropTarget(slots, x, y) {
+export function findDropTarget(slots, x, y, shelves = []) {
+  // A shelf includes its empty space and ledge, not just its book spines.
+  // Restrict candidates to that shelf so shorter books remain easy to target.
+  const shelf = shelves.find((row) => x >= row.x && x <= row.x + row.width
+    && y >= row.y && y <= row.y + row.height);
+  if (shelf) {
+    const candidates = slots.filter((slot) => shelf.bookIds.includes(slot.id));
+    if (!candidates.length) return null;
+    return candidates.reduce((nearest, slot) => (
+      Math.abs(x - (slot.x + slot.width / 2)) < Math.abs(x - (nearest.x + nearest.width / 2))
+        ? slot : nearest
+    )).id;
+  }
   const rows = slots.filter((slot) => y >= slot.y && y <= slot.y + slot.height);
   if (!rows.length) return null;
   const left = Math.min(...rows.map((slot) => slot.x));

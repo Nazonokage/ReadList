@@ -60,6 +60,8 @@ export default function DraggableShelf({ books, onReorder, onSelectBook, onDragS
 
   const slots = useRef(new Map());
   const measuredSlots = useRef([]);
+  const shelfNodes = useRef(new Map());
+  const measuredShelves = useRef([]);
   const dragSession = useRef(null);
   const dragAllowed = useRef(false);
   const canReorder = reorderMode && !reorderDisabled && activeLayout === 'CUSTOM';
@@ -80,6 +82,7 @@ export default function DraggableShelf({ books, onReorder, onSelectBook, onDragS
     dragAllowed.current = canReorder || canPressDrag;
     dragSession.current = id;
     measuredSlots.current = [];
+    measuredShelves.current = [];
     setActiveDragId(id);
     onDragStateChange?.(true);
     if (canPressDrag) Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
@@ -88,6 +91,13 @@ export default function DraggableShelf({ books, onReorder, onSelectBook, onDragS
       node.measureInWindow((x, y, width, height) => {
         if (dragSession.current === id && width > 0 && height > 0) {
           measuredSlots.current.push({ id: slotId, x, y, width, height });
+        }
+      });
+    });
+    shelfNodes.current.forEach(({ node, bookIds }) => {
+      node.measureInWindow((x, y, width, height) => {
+        if (dragSession.current === id && width > 0 && height > 0) {
+          measuredShelves.current.push({ bookIds, x, y, width, height });
         }
       });
     });
@@ -101,7 +111,7 @@ export default function DraggableShelf({ books, onReorder, onSelectBook, onDragS
     setActiveDragId(null);
     onDragStateChange?.(false);
     if (!wasActive || canceled || !allowed) return;
-    const targetId = findDropTarget(measuredSlots.current, x, y);
+    const targetId = findDropTarget(measuredSlots.current, x, y, measuredShelves.current);
     if (targetId !== null && targetId !== id) {
       const moved = books.find((book) => book.id === id);
       const targetIndex = books.findIndex((book) => book.id === targetId);
@@ -328,7 +338,7 @@ export default function DraggableShelf({ books, onReorder, onSelectBook, onDragS
         <View style={styles.dragBanner}>
           <Ionicons name="hand-right" size={14} color={THEME.colors.gold} />
           <Text style={styles.dragBannerText}>
-            Drag the handle above a book, or use the arrows. Release over another book to move it there.
+            Drag a book onto another shelf or book, or use the arrows. Full shelves shift books along to make room.
           </Text>
         </View>
       )}
@@ -341,7 +351,16 @@ export default function DraggableShelf({ books, onReorder, onSelectBook, onDragS
 
       {/* Categorized Wooden Shelves */}
       {visibleSections.map((shelf, shelfIdx) => (
-        <View key={shelfIdx} style={[styles.shelfUnit, shelf.items.some((book) => book.id === activeDragId) && { zIndex: 100 }]}>
+        <View
+          key={shelfIdx}
+          ref={(node) => {
+            if (node && shelf.items.length) shelfNodes.current.set(shelfIdx, { node, bookIds: shelf.items.map((book) => book.id) });
+            else shelfNodes.current.delete(shelfIdx);
+          }}
+          collapsable={false}
+          testID={`shelf-${page * shelfCount + shelfIdx + 1}`}
+          style={[styles.shelfUnit, activeDragId !== null && shelf.items.length > 0 && styles.shelfDropZone, shelf.items.some((book) => book.id === activeDragId) && { zIndex: 100 }]}
+        >
           {/* Books Row */}
           <View style={styles.booksRow}>
             {shelf.items.map((book) => {
@@ -581,6 +600,9 @@ const styles = StyleSheet.create({
   },
   shelfUnit: {
     marginBottom: 26
+  },
+  shelfDropZone: {
+    backgroundColor: 'rgba(212, 175, 55, 0.08)',
   },
   booksRow: {
     flexDirection: 'row',
